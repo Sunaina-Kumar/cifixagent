@@ -2,24 +2,3 @@ pytest
 # requests is intentionally missing
 
 
-requests'
-2026-01-31T10:03:50.0870700Z =========================== short test summary info ============================
-2026-01-31T10:03:50.0871081Z ERROR tests/test_app.py
-2026-01-31T10:03:50.0871398Z !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
-2026-01-31T10:03:50.0871963Z =============================== 1 error in 0.13s ===============================
-2026-01-31T10:03:50.1075085Z ##[error]Process completed with exit code 2.
-﻿2026-01-31T10:03:50.1186939Z Post job cleanup.
-2026-01-31T10:03:50.2137992Z [command]/usr/bin/git version
-2026-01-31T10:03:50.2173669Z git version 2.52.0
-2026-01-31T10:03:50.2215705Z Temporarily overriding HOME='/home/runner/work/_temp/2b2dd675-6466-4ed4-a79a-6b0abe297a9e' before making global git config changes
-2026-01-31T10:03:50.2216891Z Adding repository directory to the temporary git global config as a safe directory
-2026-01-31T10:03:50.2229976Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/cifixagent/cifixagent
-2026-01-31T10:03:50.2266696Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
-2026-01-31T10:03:50.2299416Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
-2026-01-31T10:03:50.2534737Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
-2026-01-31T10:03:50.2556022Z http.https://github.com/.extraheader
-2026-01-31T10:03:50.2568585Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
-2026-01-31T10:03:50.2599309Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
-2026-01-31T10:03:50.2825406Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
-2026-01-31T10:03:50.2856256Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
-﻿2026-01-31T10:03:50.3191808Z Cleaning up orphan processes
