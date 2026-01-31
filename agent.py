@@ -23,21 +23,18 @@ class GitHubTool:
         url = f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/logs"
         response = requests.get(url, headers=self.headers)
         response.raise_for_status()
-        
         zip_file = zipfile.ZipFile(io.BytesIO(response.content))
         logs = ""
         for name in zip_file.namelist():
             logs += zip_file.read(name).decode("utf-8", errors="ignore")
         return logs
 
-    def get_pr_info(self):
+    def post_pr_comment(self, body: str):
         run_url = f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}"
         run = requests.get(run_url, headers=self.headers).json()
         if not run.get("pull_requests"):
-            return None
-        return run["pull_requests"][0]
-
-    def post_pr_comment(self, pr_number, body: str):
+            return
+        pr_number = run["pull_requests"][0]["number"]
         comment_url = f"https://api.github.com/repos/{self.repo}/issues/{pr_number}/comments"
         requests.post(comment_url, headers=self.headers, json={"body": body})
 
@@ -46,60 +43,52 @@ class CIFixAgent:
         self.github = GitHubTool()
 
     def parse_logs(self, logs: str):
-        # Regex to find: File "path/to/file.py", line X, in <module> \n ModuleNotFoundError: No module named 'xyz'
-        pattern = r'File "(.*?)".*?ModuleNotFoundError: No module named [\'"](.*?)[\'"]'
-        match = re.search(pattern, logs, re.DOTALL)
+        """
+        Extracts module and the file that triggered the error.
+        Matches: app/__init__.py:1: in <module> ... ModuleNotFoundError: No module named 'requests'
+        """
+        # Look for the last file mentioned before the error
+        file_match = re.findall(r'([\w/]+\.py):\d+: in <module>', logs)
+        module_match = re.search(r"ModuleNotFoundError: No module named ['\"](.*?)['\"]", logs)
         
-        if match:
-            return {
-                "file": match.group(1),
-                "module": match.group(2)
-            }
-        return None
+        return {
+            "file": file_match[-1] if file_match else "Unknown",
+            "module": module_match.group(1) if module_match else None
+        }
 
-    def run_diagnosis(self):
-        pr = self.github.get_pr_info()
-        if not pr: return
-
+    def diagnose(self):
         logs = self.github.get_ci_logs()
         info = self.parse_logs(logs)
 
-        if info:
+        if info["module"]:
             comment = (
-                f"🤖 **CI Janitor Diagnosis**\n\n"
-                f"**Missing Module:** `{info['module']}`\n"
-                f"**Importing File:** `{info['file']}`\n\n"
-                f"Should I add `{info['module']}` to `requirements.txt`? \n"
-                f"Reply with **APPROVE** to apply fix."
+                f"### 🤖 CI Janitor Diagnosis\n"
+                f"- **Missing Module:** `{info['module']}`\n"
+                f"- **Importing File:** `{info['file']}`\n\n"
+                f"Reply with **APPROVE** to add this to `requirements.txt`."
             )
-            self.github.post_pr_comment(pr['number'], comment)
-            print(f"Diagnosis posted for module: {info['module']}")
+            self.github.post_pr_comment(comment)
         else:
-            print("No ModuleNotFoundError detected.")
+            print("No actionable error found.")
 
     def apply_fix(self, module_name):
         req = Path("requirements.txt")
         content = req.read_text() if req.exists() else ""
-        
         if module_name not in content:
-            with open(req, "a") as f:
-                f.write(f"\n{module_name}")
+            req.write_text(content.strip() + f"\n{module_name}\n")
         
-        # Git operations
         run_git(["git", "config", "user.name", "ci-janitor-bot"])
         run_git(["git", "config", "user.email", "ci-janitor@users.noreply.github.com"])
         run_git(["git", "add", "requirements.txt"])
-        run_git(["git", "commit", "-m", f"ci-fix: add {module_name}"])
+        run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {module_name}"])
         
         branch = os.environ.get("PR_BRANCH")
         run_git(["git", "push", "origin", f"HEAD:{branch}"])
-        print(f"Applied fix for {module_name}")
 
 if __name__ == "__main__":
     agent = CIFixAgent()
-    # If triggered by a comment (handled by env var)
-    if os.environ.get("AGENT_MODE") == "APPLY":
-        module = os.environ.get("MODULE_TO_FIX")
-        agent.apply_fix(module)
+    mode = os.environ.get("AGENT_MODE")
+    if mode == "APPLY":
+        agent.apply_fix(os.environ.get("MODULE_NAME"))
     else:
-        agent.run_diagnosis()
+        agent.diagnose()
