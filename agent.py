@@ -1,8 +1,11 @@
+
 import os
 import requests
 import zipfile
 import io
 from pathlib import Path
+import re
+
 
 import subprocess
 
@@ -116,14 +119,15 @@ class CIFixAgent:
         Decide WHAT is wrong.
         (Pure reasoning, no side effects)
         """
-        if "ModuleNotFoundError" in logs:
-            missing = logs.split("No module named")[-1].strip().strip("'\"")
+        match = re.search(r"No module named ['\"]([^'\"]+)['\"]", logs)
+        if match:
             return {
                 "type": "missing_dependency",
-                "dependency": missing
+                "dependency": match.group(1)
             }
 
         return {"type": "unknown"}
+
 
     def act(self, diagnosis):
         """
