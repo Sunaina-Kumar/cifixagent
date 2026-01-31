@@ -7,22 +7,12 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  actions: read
-  contents: write
-  pull-requests: write
-  issues: write
-
 jobs:
   diagnose:
-    # Runs only when the main CI fails
     if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
       - name: Run Diagnosis
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -30,43 +20,21 @@ jobs:
           REPO: ${{ github.repository }}
         run: python agent.py
 
-  approve_and_fix:
-    # Runs only when someone types APPROVE in a PR comment
+  apply_fix:
     if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, 'APPROVE') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Fetch the PR branch specifically
-          fetch-depth: 0
-      
-      - name: Get Module Name from Logs
-        id: get_info
+      - name: Extract Module and Apply
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Use GH CLI to find the last failed run ID for this PR
-          RUN_ID=$(gh run list --repo ${{ github.repository }} --workflow "CI" --status failure --limit 1 --json databaseId -q '.[0].databaseId')
-          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
-          
-          # We need a small script or logic to re-extract the module name
-          # For simplicity, let's extract it from the agent's previous comment
-          MODULE=$(gh issue view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json comments -q '.comments[].body' | grep "Missing Module:" | tail -n 1 | sed 's/.*`\(.*\)`.*/\1/')
-          echo "MODULE=$MODULE" >> $GITHUB_ENV
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Apply Fix
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID: ${{ env.RUN_ID }}
           REPO: ${{ github.repository }}
-          AGENT_MODE: "APPLY"
-          MODULE_TO_FIX: ${{ env.MODULE }}
-          PR_BRANCH: ${{ github.event.issue.pull_request.head.ref }} # Simplified for comment trigger
+          # We fetch the module name from the bot's own previous comment
         run: |
-          # Checkout the head branch of the PR
-          gh pr checkout ${{ github.event.issue.number }}
-          python agent.py
+          PR_NUMBER=${{ github.event.issue.number }}
+          MODULE=$(gh issue view $PR_NUMBER --json comments -q '.comments[].body' | grep "Missing Module:" | tail -n 1 | sed 's/.*`\(.*\)`.*/\1/')
+          PR_BRANCH=$(gh pr view $PR_NUMBER --json headRefName -q '.headRefName')
+          
+          gh pr checkout $PR_NUMBER
+          
+          AGENT_MODE=APPLY MODULE_NAME=$MODULE PR_BRANCH=$PR_BRANCH python agent.py
