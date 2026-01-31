@@ -1,2 +1,2 @@
 pytest
-# requests is intentionally missing
+tensorflow==2.8.0
