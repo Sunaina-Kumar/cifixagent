@@ -5,6 +5,9 @@ on:
     workflows: ["CI"]
     types: [completed]
 
+  issue_comment:
+    types: [created]
+
 permissions:
   actions: read
   contents: write
@@ -12,13 +15,19 @@ permissions:
 
 jobs:
   fix:
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    if: |
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'failure')
+      ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, 'APPROVE'))
+
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
