@@ -3,17 +3,18 @@ import requests
 import zipfile
 import io
 from pathlib import Path
+import subprocess
 import re
 
-
-import subprocess
-
+# =========================
+# Utilities
+# =========================
 def run_git(cmd):
     subprocess.run(cmd, check=True)
 
 
 # =========================
-# GitHub MCP Tool
+# GitHub Tool
 # =========================
 class GitHubTool:
     def __init__(self):
@@ -22,150 +23,140 @@ class GitHubTool:
         self.run_id = os.environ["RUN_ID"]
         self.headers = {
             "Authorization": f"Bearer {self.token}",
-            "Accept": "application/vnd.github+json"
+            "Accept": "application/vnd.github+json",
         }
 
     def get_ci_logs(self) -> str:
-        """
-        Fetch logs for the failed CI workflow run.
-        (Maps to GitHub MCP Server: read CI logs)
-        """
         url = f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/logs"
-        response = requests.get(url, headers=self.headers)
-        response.raise_for_status()
+        r = requests.get(url, headers=self.headers)
+        r.raise_for_status()
 
-        zip_file = zipfile.ZipFile(io.BytesIO(response.content))
+        zip_file = zipfile.ZipFile(io.BytesIO(r.content))
         logs = ""
         for name in zip_file.namelist():
             logs += zip_file.read(name).decode("utf-8", errors="ignore")
-
         return logs
 
-    def post_pr_comment(self, body: str):
-        """
-        Post a comment on the associated PR.
-        (Maps to GitHub MCP Server: PR comments)
-        """
+    def get_pr_number(self):
         run_url = f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}"
         run = requests.get(run_url, headers=self.headers).json()
+        prs = run.get("pull_requests", [])
+        return prs[0]["number"] if prs else None
 
-        if not run.get("pull_requests"):
-            print("No PR associated with this workflow run.")
+    def post_pr_comment(self, body: str):
+        pr = self.get_pr_number()
+        if not pr:
+            print("No PR associated with this run.")
             return
 
-        pr_number = run["pull_requests"][0]["number"]
-        comment_url = f"https://api.github.com/repos/{self.repo}/issues/{pr_number}/comments"
+        url = f"https://api.github.com/repos/{self.repo}/issues/{pr}/comments"
+        requests.post(url, headers=self.headers, json={"body": body})
 
-        requests.post(
-            comment_url,
-            headers=self.headers,
-            json={"body": body}
-        )
+    def get_pr_comments(self):
+        pr = self.get_pr_number()
+        if not pr:
+            return []
+
+        url = f"https://api.github.com/repos/{self.repo}/issues/{pr}/comments"
+        r = requests.get(url, headers=self.headers)
+        r.raise_for_status()
+        return [c["body"] for c in r.json()]
 
 
 # =========================
-# Filesystem MCP Tool
+# Filesystem Tool
 # =========================
 class FilesystemTool:
-    def add_dependency(self, dependency: str):
-        """
-        Apply a minimal patch to requirements.txt
-        (Maps to Filesystem MCP Server: apply patch)
-        """
+    def add_dependency(self, dep: str):
         req = Path("requirements.txt")
-        content = req.read_text()
+        content = req.read_text().splitlines()
 
-        if dependency not in content:
-            req.write_text(content + f"\n{dependency}\n")
-
-def commit_and_push_fix(dep: str):
-    run_git(["git", "config", "user.name", "ci-janitor-bot"])
-    run_git(["git", "config", "user.email", "ci-janitor@users.noreply.github.com"])
-
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        capture_output=True,
-        text=True
-    ).stdout.strip()
-
-    if not status:
-        print("No changes detected, skipping commit.")
-        return
-
-    run_git(["git", "add", "requirements.txt"])
-    run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {dep}"])
-
-    branch = os.environ.get("PR_BRANCH")
-    if not branch:
-        raise RuntimeError("PR_BRANCH not set; cannot push fix.")
-
-
-    run_git(["git", "push", "origin", f"HEAD:{branch}"])
-
-
+        if dep not in content:
+            content.append(dep)
+            req.write_text("\n".join(content) + "\n")
 
 
 # =========================
-# Agent Reasoning Core
+# Core Agent
 # =========================
 class CIFixAgent:
     def __init__(self):
         self.github = GitHubTool()
         self.fs = FilesystemTool()
 
+    # ---------- DIAGNOSIS ----------
     def diagnose(self, logs: str):
-        """
-        Decide WHAT is wrong.
-        (Pure reasoning, no side effects)
-        """
-        if "ModuleNotFoundError" in logs:
-            missing = logs.split("No module named")[-1].strip().strip("'\"")
-            return {
-                "type": "missing_dependency",
-                "dependency": missing
-            }
+        match = re.search(r"No module named ['\"]([^'\"]+)['\"]", logs)
+        if not match:
+            return None
 
-        return {"type": "unknown"}
+        return match.group(1)
 
-    def act(self, diagnosis):
-        """
-        Decide HOW to fix it.
-        (Calls MCP tools)
-        """
-        if diagnosis["type"] == "missing_dependency":
-            dep = diagnosis["dependency"]
-            self.fs.add_dependency(dep)
-            commit_and_push_fix(dep)
+    # ---------- APPROVAL CHECK ----------
+    def has_human_approval(self):
+        comments = self.github.get_pr_comments()
+        return any(c.strip().upper() == "APPROVE" for c in comments)
 
-            comment = f"""
-            🤖 **CI Janitor Report**
+    # ---------- APPLY FIX ----------
+    def apply_fix(self, dep: str):
+        self.fs.add_dependency(dep)
 
-            **Error Detected**
-            - Missing Python dependency: `{dep}`
+        run_git(["git", "config", "user.name", "ci-janitor-bot"])
+        run_git(["git", "config", "user.email", "ci-janitor@users.noreply.github.com"])
 
-            **Root Cause**
-            - Dependency not listed in `requirements.txt`
+        run_git(["git", "add", "requirements.txt"])
+        run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {dep}"])
 
-            **Action Taken**
-            - Added `{dep}` to `requirements.txt`
-            - Committed fix to PR branch
+        branch = os.environ["PR_BRANCH"]
+        run_git(["git", "push", "origin", f"HEAD:{branch}"])
 
-            **Result**
-            - CI automatically re-triggered
-            """
-            self.github.post_pr_comment(comment)
-
-            print(f"✔ Fixed and committed missing dependency: {dep}")
-
+    # ---------- MAIN ----------
     def run(self):
         logs = self.github.get_ci_logs()
-        diagnosis = self.diagnose(logs)
-        self.act(diagnosis)
+        dep = self.diagnose(logs)
+
+        if not dep:
+            print("No actionable error found.")
+            return
+
+        # If not approved → diagnose only
+        if not self.has_human_approval():
+            self.github.post_pr_comment(
+                f"""❌ **CI Failure Detected**
+
+**Reason**
+• Python module `{dep}` is imported but not installed
+
+**Root Cause**
+• `{dep}` is missing from `requirements.txt`
+
+**Suggested Fix**
+• Add `{dep}` to `requirements.txt`
+
+✋ **Approval Required**
+Reply with **APPROVE** to apply this fix.
+"""
+            )
+            print("Awaiting human approval.")
+            return
+
+        # Approved → apply fix
+        self.apply_fix(dep)
+        self.github.post_pr_comment(
+            f"""✅ **Fix Applied**
+
+**Change Made**
+• Added `{dep}` to `requirements.txt`
+
+**Result**
+• CI re-triggered automatically
+"""
+        )
+        print(f"Applied approved fix: {dep}")
 
 
 # =========================
-# Entry Point
+# Entry
 # =========================
 if __name__ == "__main__":
-    agent = CIFixAgent()
-    agent.run()
+    CIFixAgent().run()
