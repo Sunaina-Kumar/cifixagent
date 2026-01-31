@@ -5,8 +5,39 @@ on:
     workflows: ["CI"]
     types: [completed]
 
-  issue_comment:
-    types: [created]
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Run CI Fix Agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+          PR_BRANCH: ${{ github.event.workflow_run.pull_requests[0].head.ref }}
+        run: |
+          python agent.py
+name: CI Fix Agent
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
 permissions:
   actions: read
@@ -15,19 +46,13 @@ permissions:
 
 jobs:
   fix:
-    if: |
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'failure')
-      ||
-      (github.event_name == 'issue_comment' &&
-       contains(github.event.comment.body, 'APPROVE'))
-
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: actions/setup-python@v5
         with:
