@@ -2,48 +2,86 @@ name: CI Fix Agent
 
 on:
   workflow_run:
-    workflows: ["CI"] # Ensure this matches your main CI workflow name exactly
+    workflows: ["CI"]
     types: [completed]
   issue_comment:
     types: [created]
 
-permissions:
-  actions: read
-  contents: write
-  pull-requests: write
-  issues: write
-
 jobs:
-  diagnose:
+  propose:
     if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - name: Run Agent Diagnosis
+      - name: Checkout (same commit that failed)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run agent (propose only)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
+          GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CI_JANITOR_APPROVED: "0"
         run: python agent.py
 
-  apply_fix:
-    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, 'APPROVE') }}
+  apply:
+    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/ci-janitor approve') }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Extract Module and Commit
+      - name: Get PR info (head repo + head ref)
+        id: pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          # 1. Get the module name from the bot's diagnosis comment
-          MODULE=$(gh issue view ${{ github.event.issue.number }} --json comments -q '.comments[].body' | grep "Missing Module:" | tail -n 1 | sed 's/.*`\(.*\)`.*/\1/')
-          
-          # 2. Get the branch name
-          PR_BRANCH=$(gh pr view ${{ github.event.issue.number }} --json headRefName -q '.headRefName')
-          
-          # 3. Checkout and apply
-          gh pr checkout ${{ github.event.issue.number }}
-          
-          AGENT_MODE=APPLY MODULE_NAME=$MODULE PR_BRANCH=$PR_BRANCH python agent.py
+          set -e
+          api="https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}"
+          json=$(curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "$api")
+
+          echo "head_ref=$(echo "$json" | python -c "import sys,json; print(json.load(sys.stdin)['head']['ref'])")" >> $GITHUB_OUTPUT
+          echo "head_repo=$(echo "$json" | python -c "import sys,json; print(json.load(sys.stdin)['head']['repo']['full_name'])")" >> $GITHUB_OUTPUT
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run agent (apply)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+          CI_JANITOR_APPROVED: "1"
+        run: python agent.py
