@@ -26,6 +26,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Export Python version
+        run: echo "PYTHON_VERSION=$(python -V | awk '{print $2}')" >> $GITHUB_ENV
+
       - name: Install agent deps
         run: |
           python -m pip install --upgrade pip
@@ -40,7 +43,14 @@ jobs:
         run: python agent.py
 
   apply:
-    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/ci-janitor approve') }}
+    if: ${{ 
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      (
+        contains(github.event.comment.body, '/ci-janitor approve') ||
+        contains(github.event.comment.body, '/ci-janitor approve-python')
+      )
+    }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -54,10 +64,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          set -e
           api="https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}"
-          json=$(curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "$api")
-
+          json=$(curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" "$api")
           echo "head_ref=$(echo "$json" | python -c "import sys,json; print(json.load(sys.stdin)['head']['ref'])")" >> $GITHUB_OUTPUT
           echo "head_repo=$(echo "$json" | python -c "import sys,json; print(json.load(sys.stdin)['head']['repo']['full_name'])")" >> $GITHUB_OUTPUT
 
@@ -72,6 +80,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Export Python version
+        run: echo "PYTHON_VERSION=$(python -V | awk '{print $2}')" >> $GITHUB_ENV
+
       - name: Install agent deps
         run: |
           python -m pip install --upgrade pip
@@ -84,4 +95,5 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
           CI_JANITOR_APPROVED: "1"
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: python agent.py
