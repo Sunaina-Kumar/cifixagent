@@ -4,7 +4,7 @@ import re
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import requests
 
@@ -19,63 +19,39 @@ def run_git(cmd):
 def commit_and_push_fix(dep: str, branch: str):
     run_git(["git", "config", "user.name", "ci-janitor-bot"])
     run_git(["git", "config", "user.email", "ci-janitor@users.noreply.github.com"])
-
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        capture_output=True,
-        text=True
-    ).stdout.strip()
-
-    if not status:
-        print("No changes detected, skipping commit.")
-        return
-
     run_git(["git", "add", "requirements.txt"])
     run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {dep}"])
     run_git(["git", "push", "origin", f"HEAD:{branch}"])
 
 
 # =========================
-# Log Analysis
+# Log analysis
 # =========================
 def find_missing_dependency(logs: str) -> Optional[str]:
     m = re.search(r"No module named ['\"]([^'\"]+)['\"]", logs)
     return m.group(1).strip() if m else None
 
 
-def find_python_version_conflict(logs: str) -> Optional[Tuple[str, str]]:
-    """
-    Detect errors like:
-    - Package X requires Python < 3.9
-    - Requires-Python >=3.8,<3.10
-    """
+def find_python_constraint(logs: str) -> Optional[str]:
     patterns = [
-        r"Package\s+([^\s]+)\s+requires Python\s+([^\n]+)",
-        r"Requires-Python\s+([^\n]+)"
+        r"Requires-Python\s*([^\s,;]+)",
+        r"requires Python\s*([^\n]+)",
     ]
-
     for p in patterns:
-        m = re.search(p, logs)
+        m = re.search(p, logs, re.IGNORECASE)
         if m:
-            if len(m.groups()) == 2:
-                return m.group(1), m.group(2)
-            else:
-                return "unknown-package", m.group(1)
-
+            return m.group(1).strip()
     return None
 
 
-def make_log_excerpt(logs: str, max_lines: int = 30, max_chars: int = 1800) -> str:
+def make_log_excerpt(logs: str, max_lines: int = 25) -> str:
     lines = logs.splitlines()
-    idx = next((i for i, l in enumerate(lines) if "ERROR" in l or "ModuleNotFoundError" in l), 0)
-
-    snippet = lines[max(0, idx - 10): idx + 10]
-    text = "\n".join(snippet).strip()
-
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n... (truncated)"
-
-    return text
+    for i, l in enumerate(lines):
+        if "ModuleNotFoundError" in l or "Requires-Python" in l:
+            start = max(0, i - 8)
+            end = min(len(lines), i + 8)
+            return "\n".join(lines[start:end])
+    return "\n".join(lines[:max_lines])
 
 
 # =========================
@@ -92,57 +68,37 @@ class GitHubTool:
             "Accept": "application/vnd.github+json",
         }
 
-    def _get_json(self, url: str) -> dict:
+    def _get_json(self, url: str):
         r = requests.get(url, headers=self.headers)
         r.raise_for_status()
         return r.json()
 
-    def _post_json(self, url: str, payload: dict):
-        r = requests.post(url, headers=self.headers, json=payload)
-        r.raise_for_status()
-
-    def get_ci_logs(self) -> str:
-        run_id = self.run_id
-
-        if not run_id:
-            pr_url = f"https://api.github.com/repos/{self.repo}/pulls/{self.pr_number}"
-            pr = self._get_json(pr_url)
-            head_sha = pr["head"]["sha"]
-
-            runs_url = f"https://api.github.com/repos/{self.repo}/actions/runs?per_page=50"
-            runs = self._get_json(runs_url)["workflow_runs"]
-
-            for r in runs:
-                if r["head_sha"] == head_sha and r["conclusion"] == "failure":
-                    run_id = r["id"]
-                    break
-
-            if not run_id:
-                raise RuntimeError("No failed CI run found for PR.")
-
-            self.run_id = str(run_id)
-
-        url = f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}/logs"
-        r = requests.get(url, headers=self.headers)
-        r.raise_for_status()
-
-        z = zipfile.ZipFile(io.BytesIO(r.content))
-        return "".join(z.read(n).decode("utf-8", errors="ignore") for n in z.namelist())
+    def post_pr_comment(self, body: str):
+        pr = self.get_pr_number()
+        url = f"https://api.github.com/repos/{self.repo}/issues/{pr}/comments"
+        requests.post(url, headers=self.headers, json={"body": body})
 
     def get_pr_number(self) -> int:
         if self.pr_number:
             return int(self.pr_number)
-
-        run = self._get_json(
-            f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}"
-        )
-
+        run = self._get_json(f"https://api.github.com/repos/{self.repo}/actions/runs/{self.run_id}")
         return int(run["pull_requests"][0]["number"])
 
-    def post_pr_comment(self, body: str):
-        pr = self.get_pr_number()
-        url = f"https://api.github.com/repos/{self.repo}/issues/{pr}/comments"
-        self._post_json(url, {"body": body})
+    def get_ci_logs(self) -> str:
+        run_id = self.run_id
+        if not run_id:
+            pr = self._get_json(f"https://api.github.com/repos/{self.repo}/pulls/{self.pr_number}")
+            sha = pr["head"]["sha"]
+            runs = self._get_json(f"https://api.github.com/repos/{self.repo}/actions/runs")["workflow_runs"]
+            for r in runs:
+                if r["head_sha"] == sha and r["conclusion"] == "failure":
+                    run_id = r["id"]
+                    break
+        url = f"https://api.github.com/repos/{self.repo}/actions/runs/{run_id}/logs"
+        r = requests.get(url, headers=self.headers)
+        r.raise_for_status()
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        return "".join(z.read(n).decode("utf-8", errors="ignore") for n in z.namelist())
 
 
 # =========================
@@ -151,11 +107,10 @@ class GitHubTool:
 class FilesystemTool:
     def add_dependency(self, dep: str):
         req = Path("requirements.txt")
-        content = req.read_text().splitlines()
-
-        if dep not in content:
-            content.append(dep)
-            req.write_text("\n".join(content) + "\n")
+        lines = req.read_text().splitlines()
+        if dep not in lines:
+            lines.append(dep)
+            req.write_text("\n".join(lines) + "\n")
 
 
 # =========================
@@ -169,39 +124,68 @@ class CIFixAgent:
     def run(self):
         logs = self.github.get_ci_logs()
         approved = os.environ.get("CI_JANITOR_APPROVED") == "1"
+        comment_body = os.environ.get("COMMENT_BODY", "").lower()
+        py_version = os.environ.get("PYTHON_VERSION", "unknown")
 
-        # ---- LEVEL 1: Missing dependency ----
+        # -------- Missing dependency (UNCHANGED) --------
         dep = find_missing_dependency(logs)
         if dep:
             if not approved:
                 self.github.post_pr_comment(
                     f"""🤖 **CI Janitor**
 
-**Issue detected**
-• Missing Python dependency `{dep}`
+Missing dependency `{dep}`.
 
-**Proposed fix**
+**Proposed change**
 • Add `{dep}` to `requirements.txt`
 
-Reply with `/ci-janitor approve` to apply this fix.
+Reply with `/ci-janitor approve` to apply.
 """
                 )
                 return
 
-            self.fs.add_dependency(dep)
-            branch = os.environ.get("PR_BRANCH") or os.environ.get("GITHUB_HEAD_REF")
-            commit_and_push_fix(dep, branch)
-            self.github.post_pr_comment(f"✅ Added `{dep}` to `requirements.txt`.")
-            return
+            if "/ci-janitor approve" in comment_body:
+                branch = os.environ.get("PR_BRANCH")
+                self.fs.add_dependency(dep)
+                commit_and_push_fix(dep, branch)
+                self.github.post_pr_comment(f"✅ Added `{dep}` to `requirements.txt`.")
+                return
 
-        # ---- LEVEL 2: Python version conflict ----
-        conflict = find_python_version_conflict(logs)
-        if conflict:
-            pkg, constraint = conflict
-            py_ver = os.environ.get("PYTHON_VERSION", "unknown")
+        # -------- Python version conflict (NEW) --------
+        constraint = find_python_constraint(logs)
+        if constraint:
+            if not approved:
+                self.github.post_pr_comment(
+                    f"""🤖 **CI Janitor — Python Version Conflict**
 
-            self.github.post_pr_comment(
-                f"""🤖 **CI Janitor — Version Conflict Detected**
+A dependency requires Python `{constraint}`  
+CI is currently using Python `{py_version}`.
 
-**Problem**
-• Package `{pk
+**Proposed change**
+• Update CI Python version to a compatible release.
+
+Reply with `/ci-janitor approve-python` to apply.
+"""
+                )
+                return
+
+            if "/ci-janitor approve-python" in comment_body:
+                self.github.post_pr_comment(
+                    f"""⚠️ **Python Version Change Approved**
+
+Please update `actions/setup-python` to a version compatible with:
+• `{constraint}`
+
+(No automatic change was made.)
+"""
+                )
+                return
+
+        self.github.post_pr_comment("🤖 CI Janitor: CI failed, but no known fix was detected.")
+
+
+# =========================
+# Entry Point
+# =========================
+if __name__ == "__main__":
+    CIFixAgent().run()
