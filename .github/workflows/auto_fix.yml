@@ -2,10 +2,16 @@ name: CI Fix Agent
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["CI"] # Ensure this matches your main CI workflow name exactly
     types: [completed]
   issue_comment:
     types: [created]
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
   diagnose:
@@ -13,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run Diagnosis
+      - name: Run Agent Diagnosis
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.event.workflow_run.id }}
@@ -25,16 +31,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Extract Module and Apply
+      
+      - name: Extract Module and Commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          # We fetch the module name from the bot's own previous comment
         run: |
-          PR_NUMBER=${{ github.event.issue.number }}
-          MODULE=$(gh issue view $PR_NUMBER --json comments -q '.comments[].body' | grep "Missing Module:" | tail -n 1 | sed 's/.*`\(.*\)`.*/\1/')
-          PR_BRANCH=$(gh pr view $PR_NUMBER --json headRefName -q '.headRefName')
+          # 1. Get the module name from the bot's diagnosis comment
+          MODULE=$(gh issue view ${{ github.event.issue.number }} --json comments -q '.comments[].body' | grep "Missing Module:" | tail -n 1 | sed 's/.*`\(.*\)`.*/\1/')
           
-          gh pr checkout $PR_NUMBER
+          # 2. Get the branch name
+          PR_BRANCH=$(gh pr view ${{ github.event.issue.number }} --json headRefName -q '.headRefName')
+          
+          # 3. Checkout and apply
+          gh pr checkout ${{ github.event.issue.number }}
           
           AGENT_MODE=APPLY MODULE_NAME=$MODULE PR_BRANCH=$PR_BRANCH python agent.py
