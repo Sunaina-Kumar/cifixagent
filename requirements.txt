@@ -1,2 +1,2 @@
 pytest
-dataclasses; python_version >= "3.6" and python_version < "3.7"
+tensorflow==2.10.0
